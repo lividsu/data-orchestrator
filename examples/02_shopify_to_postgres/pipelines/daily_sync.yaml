@@ -1,0 +1,28 @@
+pipelines:
+  - id: shopify_to_postgres_daily
+    name: Shopify Daily Sync
+    schedule:
+      type: cron
+      cron_expr: "0 3 * * *"
+    tasks:
+      - id: fetch_orders
+        connector: shopify
+        action: fetch
+        connector_config:
+          base_url: "${SHOPIFY_BASE_URL}"
+          access_token: "${SHOPIFY_ACCESS_TOKEN}"
+        action_kwargs:
+          endpoint: orders.json
+          params:
+            status: any
+            created_at_min: "{{ yesterday_iso }}"
+      - id: write_orders
+        connector: postgres
+        action: push
+        connector_config:
+          dsn: "${POSTGRES_DSN}"
+        pass_output_from: fetch_orders
+        action_kwargs:
+          table: shopify_orders
+          mode: upsert
+          upsert_key: id

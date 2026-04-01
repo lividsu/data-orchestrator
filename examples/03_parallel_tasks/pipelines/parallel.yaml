@@ -1,0 +1,30 @@
+pipelines:
+  - id: parallel_demo
+    name: Parallel Tasks Demo
+    max_concurrency: 3
+    schedule:
+      type: manual
+    tasks:
+      - id: task_a
+        connector: parallel_demo
+        action: fetch
+        action_kwargs:
+          delay_seconds: 1.5
+          value: A
+      - id: task_b
+        connector: parallel_demo
+        action: fetch
+        action_kwargs:
+          delay_seconds: 1.2
+          value: B
+      - id: task_c
+        connector: parallel_demo
+        action: fetch
+        action_kwargs:
+          delay_seconds: 1.0
+          value: C
+      - id: task_merge
+        connector: parallel_demo
+        action: push
+        pass_output_from: task_c
+        depends_on: [task_a, task_b, task_c]

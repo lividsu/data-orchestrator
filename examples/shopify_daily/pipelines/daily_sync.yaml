@@ -1,0 +1,12 @@
+pipelines:
+  - id: shopify_daily_sync
+    name: Shopify 每日同步
+    schedule:
+      type: cron
+      cron_expr: "0 7 * * *"
+    tasks:
+      - id: fetch_orders
+        connector: shopify
+        action: fetch
+        action_kwargs:
+          endpoint: orders.json

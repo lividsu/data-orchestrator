@@ -1,0 +1,10 @@
+pipelines:
+  - id: minimal_demo
+    name: Minimal Demo Pipeline
+    schedule:
+      type: interval
+      interval_seconds: 30
+    tasks:
+      - id: fetch_demo
+        connector: demo_connector
+        action: fetch
