@@ -92,4 +92,5 @@ class TaskResult(BaseModel):
     error_type: str | None = None
     error_message: str | None = None
     error_traceback: str | None = None
+    terminal_output: str | None = None
     attempts: list[dict[str, str]] = Field(default_factory=list)

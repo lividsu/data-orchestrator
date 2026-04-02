@@ -128,7 +128,7 @@ class Orchestrator:
             self.load_config(str(self.config_dir))
         self._loaded = True
 
-    def trigger(self, pipeline_id: str, triggered_by: str = "manual", run_id: str | None = None):
+    def trigger(self, pipeline_id: str, triggered_by: str = "manual", run_id: str | None = None, runtime_kwargs: dict[str, Any] | None = None):
         logger.info("Pipeline trigger requested: %s", pipeline_id)
         pipeline = self._pipelines[pipeline_id]
         notify_policy = self._notify_policies.get(pipeline_id)
@@ -140,13 +140,14 @@ class Orchestrator:
             notify_policy=notify_policy,
             run_id=run_id,
             pipeline_hook_handler=self._handle_pipeline_hook,
+            runtime_kwargs=runtime_kwargs,
         )
 
-    def trigger_async(self, pipeline_id: str) -> str:
+    def trigger_async(self, pipeline_id: str, runtime_kwargs: dict[str, Any] | None = None) -> str:
         run_id = f"run-{uuid4().hex}"
 
         def runner():
-            self.trigger(pipeline_id, triggered_by="manual", run_id=run_id)
+            self.trigger(pipeline_id, triggered_by="manual", run_id=run_id, runtime_kwargs=runtime_kwargs)
 
         future = self._executor.submit(runner)
         self._running_futures.add(future)

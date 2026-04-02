@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 
 import pytest
@@ -12,6 +13,8 @@ from orchestrator.core.task import RetryConfig
 from orchestrator.core.task import Task
 from orchestrator.core.task import TaskResult
 from orchestrator.core.task import TaskStatus
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(autouse=True)
@@ -275,3 +278,31 @@ def test_unimplemented_default_action_gives_not_implemented():
 
     assert result.status == TaskStatus.FAILED
     assert result.error_type == "NotImplementedError"
+
+
+def test_terminal_output_captures_action_thread_logs():
+    @register_connector("log_capture_connector")
+    class LogCaptureConnector(BaseConnector):
+        def fetch(self, **kwargs):
+            logger.warning("connector-thread-log")
+            return {"ok": True}
+
+    task = Task(id="t_log", connector="log_capture_connector", action="fetch")
+    result = TaskRunner().run(task)
+
+    assert result.status == TaskStatus.SUCCESS
+    assert "connector-thread-log" in (result.terminal_output or "")
+
+
+def test_terminal_output_captures_print_output():
+    @register_connector("print_capture_connector")
+    class PrintCaptureConnector(BaseConnector):
+        def fetch(self, **kwargs):
+            print("connector-print-line")
+            return {"ok": True}
+
+    task = Task(id="t_print", connector="print_capture_connector", action="fetch")
+    result = TaskRunner().run(task)
+
+    assert result.status == TaskStatus.SUCCESS
+    assert "connector-print-line" in (result.terminal_output or "")

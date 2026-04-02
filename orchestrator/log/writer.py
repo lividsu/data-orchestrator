@@ -49,6 +49,7 @@ class LogWriter:
             "error_type": task_result.error_type,
             "error_message": task_result.error_message,
             "error_traceback": task_result.error_traceback,
+            "terminal_output": getattr(task_result, "terminal_output", None),
             "attempts_json": json.dumps(task_result.attempts, ensure_ascii=False),
         }
         self._safe_write(insert(task_runs).values(**payload))

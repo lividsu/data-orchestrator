@@ -9,6 +9,8 @@ from sqlalchemy import String
 from sqlalchemy import Table
 from sqlalchemy import Text
 from sqlalchemy import create_engine
+from sqlalchemy import inspect
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 metadata = MetaData()
@@ -46,6 +48,7 @@ task_runs = Table(
     Column("error_type", String),
     Column("error_message", Text),
     Column("error_traceback", Text),
+    Column("terminal_output", Text),
     Column("attempts_json", Text),
 )
 
@@ -53,3 +56,15 @@ task_runs = Table(
 def create_tables(db_url: str | None = None, engine: Engine | None = None) -> None:
     target_engine = engine or create_engine(db_url or "sqlite:///orchestrator.db")
     metadata.create_all(target_engine)
+    _ensure_task_runs_columns(target_engine)
+
+
+def _ensure_task_runs_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    existing = {column["name"] for column in inspector.get_columns("task_runs")}
+    if "terminal_output" in existing:
+        return
+    dialect = engine.dialect.name
+    if dialect in {"sqlite", "postgresql", "mysql"}:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE task_runs ADD COLUMN terminal_output TEXT"))

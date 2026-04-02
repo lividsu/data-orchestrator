@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import logging
+import sys
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +33,7 @@ from orchestrator.connectors.registry import get_connector
 from orchestrator.config.template import get_template_context
 
 logger = logging.getLogger(__name__)
+_STDIO_PROXY_LOCK = threading.Lock()
 
 
 class TaskRunner:
@@ -122,9 +125,7 @@ class TaskRunner:
                         f"Connector '{task.connector_name}' does not have action '{task.action}'. "
                         f"Available actions: {available_actions}"
                     )
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(action, **kwargs)
-                    return future.result(timeout=task.timeout_seconds)
+                return self._execute_with_terminal_capture(action, kwargs, task.timeout_seconds, result)
 
             result.output = execute()
             result.status = TaskStatus.SUCCESS
@@ -157,6 +158,46 @@ class TaskRunner:
             result.retry_count = len(result.attempts)
             if should_close_connector and connector is not None:
                 connector.close()
+
+    def _execute_with_terminal_capture(
+        self,
+        action: Callable[..., Any],
+        kwargs: dict[str, Any],
+        timeout_seconds: float,
+        result: TaskResult,
+    ) -> Any:
+        output_buffer = io.StringIO()
+        handler = _ThreadLogCaptureHandler(output_buffer)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._execute_action, action, kwargs, handler)
+                return future.result(timeout=timeout_seconds)
+        finally:
+            captured = output_buffer.getvalue().strip()
+            if captured:
+                result.terminal_output = captured
+            root_logger.removeHandler(handler)
+
+    @staticmethod
+    def _execute_action(action: Callable[..., Any], kwargs: dict[str, Any], handler: "_ThreadLogCaptureHandler") -> Any:
+        thread_id = threading.get_ident()
+        handler.bind_thread(thread_id)
+        _ensure_stdio_proxy_installed()
+        stdout_proxy = sys.stdout
+        stderr_proxy = sys.stderr
+        if isinstance(stdout_proxy, _ThreadOutputProxy):
+            stdout_proxy.register_thread(thread_id, handler.output_buffer)
+        if isinstance(stderr_proxy, _ThreadOutputProxy):
+            stderr_proxy.register_thread(thread_id, handler.output_buffer)
+        try:
+            return action(**kwargs)
+        finally:
+            if isinstance(stdout_proxy, _ThreadOutputProxy):
+                stdout_proxy.unregister_thread(thread_id, handler.output_buffer)
+            if isinstance(stderr_proxy, _ThreadOutputProxy):
+                stderr_proxy.unregister_thread(thread_id, handler.output_buffer)
 
     def _run_hook(self, hook_name: str | None, task: Task, result: TaskResult) -> None:
         if not hook_name:
@@ -214,10 +255,13 @@ class PipelineRunner:
         notify_policy: Any | None = None,
         run_id: str | None = None,
         pipeline_hook_handler: Callable[[str, PipelineResult], None] | None = None,
+        runtime_kwargs: dict[str, Any] | None = None,
     ) -> PipelineResult:
         run_id = run_id or generate_run_id()
         started_at = datetime.now(timezone.utc)
         runtime_context = get_template_context(run_id=run_id, pipeline_id=pipeline.id, now=started_at.replace(tzinfo=None))
+        if runtime_kwargs:
+            runtime_context.update(runtime_kwargs)
         if log_writer is not None:
             log_writer.pipeline_run_start(
                 pipeline_id=pipeline.id,
@@ -391,3 +435,68 @@ class PipelineRunner:
 
 def generate_run_id() -> str:
     return f"run-{uuid4().hex}"
+
+
+class _ThreadLogCaptureHandler(logging.Handler):
+    def __init__(self, output_buffer: io.StringIO) -> None:
+        super().__init__()
+        self.output_buffer = output_buffer
+        self.thread_id: int | None = None
+        self.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
+
+    def bind_thread(self, thread_id: int) -> None:
+        self.thread_id = thread_id
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self.thread_id is None or record.thread != self.thread_id:
+            return
+        self.output_buffer.write(f"{self.format(record)}\n")
+
+
+class _ThreadOutputProxy:
+    def __init__(self, original_stream) -> None:
+        self._original_stream = original_stream
+        self._lock = threading.RLock()
+        self._buffers: dict[int, list[io.StringIO]] = {}
+
+    def register_thread(self, thread_id: int, output_buffer: io.StringIO) -> None:
+        with self._lock:
+            bucket = self._buffers.setdefault(thread_id, [])
+            bucket.append(output_buffer)
+
+    def unregister_thread(self, thread_id: int, output_buffer: io.StringIO) -> None:
+        with self._lock:
+            bucket = self._buffers.get(thread_id)
+            if not bucket:
+                return
+            self._buffers[thread_id] = [buffer for buffer in bucket if buffer is not output_buffer]
+            if not self._buffers[thread_id]:
+                self._buffers.pop(thread_id, None)
+
+    def write(self, text: str) -> int:
+        if not isinstance(text, str):
+            text = str(text)
+        thread_id = threading.get_ident()
+        with self._lock:
+            buffers = list(self._buffers.get(thread_id, []))
+        for output_buffer in buffers:
+            output_buffer.write(text)
+        return self._original_stream.write(text)
+
+    def flush(self) -> None:
+        self._original_stream.flush()
+
+    def writelines(self, lines) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name: str):
+        return getattr(self._original_stream, name)
+
+
+def _ensure_stdio_proxy_installed() -> None:
+    with _STDIO_PROXY_LOCK:
+        if not isinstance(sys.stdout, _ThreadOutputProxy):
+            sys.stdout = _ThreadOutputProxy(sys.stdout)
+        if not isinstance(sys.stderr, _ThreadOutputProxy):
+            sys.stderr = _ThreadOutputProxy(sys.stderr)

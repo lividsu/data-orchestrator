@@ -53,7 +53,16 @@ class OrchestratorApiServer:
             def do_POST(self):
                 if self.path.startswith("/trigger/"):
                     pipeline_id = self.path[len("/trigger/") :]
-                    run_id = orchestrator.trigger_async(pipeline_id)
+                    content_length = int(self.headers.get("Content-Length", 0))
+                    runtime_kwargs = None
+                    if content_length > 0:
+                        try:
+                            body = self.rfile.read(content_length).decode("utf-8")
+                            payload = json.loads(body)
+                            runtime_kwargs = payload.get("runtime_kwargs")
+                        except Exception:
+                            pass
+                    run_id = orchestrator.trigger_async(pipeline_id, runtime_kwargs=runtime_kwargs)
                     self._ok({"run_id": run_id})
                     return
                 if self.path.startswith("/pause/"):

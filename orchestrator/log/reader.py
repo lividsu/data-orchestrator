@@ -57,6 +57,8 @@ class LogReader:
                     or_(
                         task_runs.c.error_message.like(keyword_clause),
                         task_runs.c.error_type.like(keyword_clause),
+                        task_runs.c.error_traceback.like(keyword_clause),
+                        task_runs.c.terminal_output.like(keyword_clause),
                     )
                 )
                 .distinct()
@@ -109,6 +111,8 @@ class LogReader:
                     or_(
                         task_runs.c.error_message.like(keyword_clause),
                         task_runs.c.error_type.like(keyword_clause),
+                        task_runs.c.error_traceback.like(keyword_clause),
+                        task_runs.c.terminal_output.like(keyword_clause),
                     )
                 )
                 .distinct()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from datetime import timezone
@@ -21,6 +22,8 @@ from orchestrator.log.models import task_runs
 from orchestrator.log.reader import LogReader
 from orchestrator.log.writer import LogWriter
 
+logger = logging.getLogger(__name__)
+
 
 @pytest.fixture(autouse=True)
 def clear_registry():
@@ -40,6 +43,8 @@ def _register_log_connector(name: str, fail: bool = False):
     @register_connector(name)
     class LogConnector(BaseConnector):
         def fetch(self, **kwargs):
+            print(f"connector print called: {name}")
+            logger.warning("connector fetch called: %s", name)
             if fail:
                 raise ValueError("test error")
             return {"ok": True}
@@ -87,6 +92,8 @@ def test_failed_task_traceback_saved(tmp_db):
     assert row["error_type"] == "ValueError"
     assert row["error_message"] == "test error"
     assert "Traceback" in row["error_traceback"]
+    assert row["terminal_output"] is not None
+    assert "connector print called: log_fail" in row["terminal_output"]
 
 
 def test_concurrent_pipelines_no_data_race(tmp_db):
@@ -171,6 +178,7 @@ def test_log_reader_run_detail_and_count(tmp_db):
                 status="failed",
                 error_type="ValueError",
                 error_message="network timeout",
+                terminal_output="request failed from terminal",
             )
         )
         conn.commit()
@@ -180,6 +188,8 @@ def test_log_reader_run_detail_and_count(tmp_db):
     assert row["pipeline_name"] == "Pipeline1"
     total = reader.count_pipeline_runs(keyword="network")
     assert total == 1
+    terminal_total = reader.count_pipeline_runs(keyword="terminal")
+    assert terminal_total == 1
     failed_map = reader.count_failed_tasks(["r1"])
     assert failed_map["r1"] == 1
 
