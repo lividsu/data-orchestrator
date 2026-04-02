@@ -111,7 +111,17 @@ class TaskRunner:
                 reraise=True,
             )
             def execute() -> Any:
-                action = getattr(connector, task.action)
+                action = getattr(connector, task.action, None)
+                if action is None or not callable(action):
+                    available_actions = [
+                        method
+                        for method in dir(connector)
+                        if not method.startswith("_") and callable(getattr(connector, method))
+                    ]
+                    raise AttributeError(
+                        f"Connector '{task.connector_name}' does not have action '{task.action}'. "
+                        f"Available actions: {available_actions}"
+                    )
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(action, **kwargs)
                     return future.result(timeout=task.timeout_seconds)

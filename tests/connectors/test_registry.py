@@ -24,14 +24,7 @@ def test_register_and_get():
         def fetch(self, **kwargs):
             return {"data": 1}
 
-        def push(self, data=None, **kwargs):
-            return None
-
-        def ping(self):
-            return True
-
     connector = get_connector("test_mock", {})
-    assert connector.ping() is True
     assert connector.fetch() == {"data": 1}
 
 
@@ -41,23 +34,11 @@ def test_duplicate_registration_raises():
         def fetch(self, **kwargs):
             return {"data": 1}
 
-        def push(self, data=None, **kwargs):
-            return None
-
-        def ping(self):
-            return True
-
     with pytest.raises(ConnectorAlreadyRegisteredError) as exc:
         @register_connector("test_mock")
         class AnotherMock(BaseConnector):
             def fetch(self, **kwargs):
                 return {"data": 2}
-
-            def push(self, data=None, **kwargs):
-                return None
-
-            def ping(self):
-                return True
 
     message = str(exc.value)
     assert "Existing: MockConnector" in message
@@ -71,9 +52,14 @@ def test_not_found_raises_with_helpful_message():
     assert "Available connectors" in str(exc.value)
 
 
-def test_cannot_instantiate_abstract_class():
-    with pytest.raises(TypeError):
-        BaseConnector({})
+def test_base_connector_methods_raise_not_implemented():
+    conn = BaseConnector({})
+    with pytest.raises(NotImplementedError):
+        conn.fetch()
+    with pytest.raises(NotImplementedError):
+        conn.push()
+    with pytest.raises(NotImplementedError):
+        conn.ping()
 
 
 def test_load_plugins_from_examples_directory():

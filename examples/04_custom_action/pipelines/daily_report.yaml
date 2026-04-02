@@ -1,0 +1,19 @@
+pipelines:
+  - id: feishu_daily_report
+    name: 每日飞书日报
+    schedule:
+      type: cron
+      cron_expr: "0 18 * * 1-5"
+      timezone: "Asia/Shanghai"
+    tasks:
+      - id: send_daily
+        connector: feishu_daily
+        connector_config:
+          webhook_url: "${FEISHU_DAILY_WEBHOOK}"
+        action: send_report
+        action_kwargs:
+          title: "{{ today }} 日报"
+          content: |
+            **今日完成：**
+            - 数据同步正常
+            - 报表生成完毕

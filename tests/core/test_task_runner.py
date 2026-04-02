@@ -29,12 +29,6 @@ def test_success_first_try():
         def fetch(self, **kwargs):
             return {"ok": True, "kwargs": kwargs}
 
-        def push(self, data=None, **kwargs):
-            return {"ok": True}
-
-        def ping(self):
-            return True
-
         def close(self):
             type(self).close_calls += 1
 
@@ -58,12 +52,6 @@ def test_retry_then_success():
                 raise RuntimeError("temporary failure")
             return {"ok": True}
 
-        def push(self, data=None, **kwargs):
-            return {"ok": True}
-
-        def ping(self):
-            return True
-
     task = Task(
         id="t2",
         connector="retry_success_connector",
@@ -85,12 +73,6 @@ def test_retry_exhausted():
 
         def fetch(self, **kwargs):
             raise RuntimeError("always failing")
-
-        def push(self, data=None, **kwargs):
-            return {"ok": True}
-
-        def ping(self):
-            return True
 
         def close(self):
             type(self).close_calls += 1
@@ -118,12 +100,6 @@ def test_timeout():
             time.sleep(2)
             return {"ok": True}
 
-        def push(self, data=None, **kwargs):
-            return {"ok": True}
-
-        def ping(self):
-            return True
-
         def close(self):
             type(self).close_calls += 1
 
@@ -146,15 +122,9 @@ def test_upstream_output_passed_as_data():
     class PushConnector(BaseConnector):
         last_data = None
 
-        def fetch(self, **kwargs):
-            return {"ok": True}
-
         def push(self, data=None, **kwargs):
             type(self).last_data = data
             return {"received": data}
-
-        def ping(self):
-            return True
 
     upstream = TaskResult(task_id="fetch_orders", task_name="fetch_orders", status=TaskStatus.SUCCESS, output={"orders": [1, 2, 3]})
     task = Task(
@@ -172,14 +142,8 @@ def test_upstream_output_passed_as_data():
 def test_pass_output_from_failed_upstream_marks_skipped():
     @register_connector("skip_push_connector")
     class PushConnector(BaseConnector):
-        def fetch(self, **kwargs):
-            return {"ok": True}
-
         def push(self, data=None, **kwargs):
             return {"received": data}
-
-        def ping(self):
-            return True
 
     upstream = TaskResult(task_id="fetch_orders", task_name="fetch_orders", status=TaskStatus.FAILED, output=None)
     task = Task(
@@ -199,12 +163,6 @@ def test_on_failure_hook_called(monkeypatch):
     class HookFailureConnector(BaseConnector):
         def fetch(self, **kwargs):
             raise RuntimeError("boom")
-
-        def push(self, data=None, **kwargs):
-            return {"ok": True}
-
-        def ping(self):
-            return True
 
     calls = []
 
@@ -239,12 +197,6 @@ def test_retry_only_on_specified_exceptions():
                 raise ValueError("do not retry")
             raise ConnectionError("retry me")
 
-        def push(self, data=None, **kwargs):
-            return {"ok": True}
-
-        def ping(self):
-            return True
-
     task = Task(
         id="t7",
         connector="filtered_retry_connector",
@@ -270,3 +222,56 @@ def test_retry_only_on_specified_exceptions():
 def test_timeout_seconds_zero_raises_validation_error():
     with pytest.raises(ValueError, match="timeout_seconds must be greater than 0"):
         Task(id="t8", connector="success_connector", action="fetch", timeout_seconds=0)
+
+
+def test_custom_action():
+    @register_connector("custom_action_connector")
+    class CustomActionConnector(BaseConnector):
+        def send_report(self, content="", **kwargs):
+            return {"sent": True, "content": content}
+
+    task = Task(
+        id="t_custom",
+        connector="custom_action_connector",
+        action="send_report",
+        action_kwargs={"content": "日报内容"},
+    )
+    result = TaskRunner().run(task)
+
+    assert result.status == TaskStatus.SUCCESS
+    assert result.output == {"sent": True, "content": "日报内容"}
+
+
+def test_missing_action_gives_clear_error():
+    @register_connector("no_such_action_connector")
+    class NoSuchActionConnector(BaseConnector):
+        def fetch(self, **kwargs):
+            return {}
+
+    task = Task(
+        id="t_missing",
+        connector="no_such_action_connector",
+        action="nonexistent_action",
+    )
+    result = TaskRunner().run(task)
+
+    assert result.status == TaskStatus.FAILED
+    assert "nonexistent_action" in (result.error_message or "")
+    assert "fetch" in (result.error_message or "")
+
+
+def test_unimplemented_default_action_gives_not_implemented():
+    @register_connector("fetch_only_connector")
+    class FetchOnlyConnector(BaseConnector):
+        def fetch(self, **kwargs):
+            return {"ok": True}
+
+    task = Task(
+        id="t_no_push",
+        connector="fetch_only_connector",
+        action="push",
+    )
+    result = TaskRunner().run(task)
+
+    assert result.status == TaskStatus.FAILED
+    assert result.error_type == "NotImplementedError"

@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Any
-from typing import Literal
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -46,7 +45,7 @@ class Task(BaseModel):
     name: str = ""
     connector_name: str = Field(alias="connector")
     connector_config: dict[str, Any] = Field(default_factory=dict)
-    action: Literal["fetch", "push"]
+    action: str
     action_kwargs: dict[str, Any] = Field(default_factory=dict)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     timeout_seconds: float = 60.0
@@ -61,6 +60,14 @@ class Task(BaseModel):
         if value <= 0:
             raise ValueError("timeout_seconds must be greater than 0.")
         return value
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, value: str) -> str:
+        action = value.strip()
+        if not action:
+            raise ValueError("action must not be empty.")
+        return action
 
 
 class TaskStatus(str, Enum):

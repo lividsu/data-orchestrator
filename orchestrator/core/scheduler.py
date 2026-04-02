@@ -161,9 +161,9 @@ class Orchestrator:
         scheduler = self._get_scheduler()
         scheduler.resume_job(pipeline_id)
 
-    def ping_all(self) -> dict[str, bool]:
+    def ping_all(self) -> dict[str, bool | None]:
         self.ensure_loaded()
-        result_by_connector: dict[str, list[bool]] = {}
+        result_by_connector: dict[str, list[bool | None]] = {}
         connector_inputs: dict[tuple[str, str], tuple[str, dict]] = {}
         for pipeline in self._pipelines.values():
             for task in pipeline.tasks:
@@ -177,12 +177,18 @@ class Orchestrator:
                 connector = get_connector(connector_name, connector_config)
                 connector.initialize()
                 result_by_connector[connector_name].append(bool(connector.ping()))
+            except NotImplementedError:
+                result_by_connector[connector_name].append(None)
             except Exception:
                 result_by_connector[connector_name].append(False)
             finally:
                 if connector is not None:
                     connector.close()
-        return {name: all(results) for name, results in result_by_connector.items()}
+        result: dict[str, bool | None] = {}
+        for name, checks in result_by_connector.items():
+            bools = [item for item in checks if item is not None]
+            result[name] = all(bools) if bools else None
+        return result
 
     def list_pipelines(self) -> list[dict[str, str | None]]:
         items: list[dict[str, str | None]] = []

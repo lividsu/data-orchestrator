@@ -60,7 +60,9 @@ $ orchestrator run           ← 启动，之后不用管它
 ## 核心概念
 
 ```
-Connector   ── 知道怎么和某个系统通信（Shopify、Postgres、飞书…）
+Connector   ── 知道怎么和某个系统交互。每个 Connector 可以定义任意 action（方法），
+               比如 fetch / push / send_report / generate / transform …
+               框架通过方法名调用，不限定你必须写哪些方法。
     ↓
 Task        ── 用某个 Connector 做一件事（拉数据 / 推数据）
     ↓
@@ -95,15 +97,11 @@ from orchestrator import BaseConnector, register_connector
 
 @register_connector("demo")
 class DemoConnector(BaseConnector):
+    """只需要实现你用到的方法。这里只用了 fetch，所以只写 fetch。"""
+
     def fetch(self, message="hello", **kwargs):
         print(f"[DemoConnector] fetching: {message}")
         return {"result": message, "count": 42}
-
-    def push(self, data, **kwargs):
-        print(f"[DemoConnector] pushing: {data}")
-
-    def ping(self):
-        return True
 ```
 
 **第二步：写一个 Pipeline**
@@ -122,11 +120,6 @@ pipelines:
         action: fetch
         action_kwargs:
           message: "第一次拉取"
-
-      - id: push_demo
-        connector: demo
-        action: push
-        depends_on: [fetch_demo]
 ```
 
 **第三步：启动**
@@ -175,7 +168,9 @@ my_data_project/                 ← 你的项目（与框架无关）
 
 ## 编写 Connector
 
-所有 Connector 继承 `BaseConnector`，实现三个方法：
+所有 Connector 继承 `BaseConnector`，只需实现自己用到的方法。
+
+框架通过 YAML 里的 `action` 字段按名称调用方法，因此 Connector 上的任何公开方法都可以作为 action。`fetch` / `push` / `ping` 是常见约定，但不是强制要求。
 
 ```python
 from orchestrator import BaseConnector, register_connector
@@ -222,6 +217,39 @@ class ShopifyConnector(BaseConnector):
             return r.status_code == 200
         except Exception:
             return False
+```
+
+### 自定义 Action
+
+不是所有场景都适合 fetch / push 的语义。你可以定义任意方法名：
+
+```python
+import requests
+from orchestrator import BaseConnector, register_connector
+
+@register_connector("feishu_daily")
+class FeishuDailyConnector(BaseConnector):
+    def __init__(self, config: dict):
+        super().__init__(config)
+        self.webhook_url = config["webhook_url"]
+
+    def send_report(self, title: str = "日报", content: str = "", **kwargs):
+        payload = {"msg_type": "text", "content": {"text": f"{title}\n{content}"}}
+        resp = requests.post(self.webhook_url, json=payload, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+```
+
+YAML 里用 `action: send_report`：
+
+```yaml
+tasks:
+  - id: send_daily
+    connector: feishu_daily
+    action: send_report
+    action_kwargs:
+      title: "{{ today }} 日报"
+      content: "数据同步完成"
 ```
 
 ### 让框架自动发现 Connector
@@ -281,7 +309,7 @@ pipelines:
         connector_config:
           shop_url: "${SHOPIFY_URL}"
           access_token: "${SHOPIFY_TOKEN}"
-        action: fetch                    # fetch 或 push
+        action: fetch                    # Connector 上的任意方法名
         action_kwargs:                   # 传给 connector.fetch() 的参数
           endpoint: orders.json
           params:
@@ -563,7 +591,7 @@ orchestrator status daily_order_sync
 orchestrator pause daily_order_sync
 orchestrator resume daily_order_sync
 
-# 检查所有 Connector 的连通性（调用 ping()）
+# 检查 Connector 连通性（调用 ping()，未实现 ping 的 connector 会显示 "not implemented"）
 orchestrator ping
 
 # 启动 UI
@@ -650,6 +678,7 @@ action_kwargs:
 - `examples/01_minimal/`：最小示例（对应快速开始）
 - `examples/02_shopify_to_postgres/`：Shopify 到 Postgres 的真实场景
 - `examples/03_parallel_tasks/`：DAG 分层并发执行演示
+- `examples/04_custom_action/`：飞书日报推送（自定义 Action）
 
 ### 示例 1：每日从 Shopify 同步订单到 Postgres
 
@@ -820,6 +849,48 @@ $ python main.py
 [Orchestrator] Started. Press Ctrl+C to stop.
 ```
 
+### 示例 4：飞书日报推送（自定义 Action）
+
+```python
+# connectors/feishu_daily.py
+import requests
+from orchestrator import BaseConnector, register_connector
+
+@register_connector("feishu_daily")
+class FeishuDailyConnector(BaseConnector):
+    def __init__(self, config: dict):
+        super().__init__(config)
+        self.webhook_url = config["webhook_url"]
+
+    def send_report(self, title="日报", content="", **kwargs):
+        resp = requests.post(
+            self.webhook_url,
+            json={"msg_type": "text", "content": {"text": f"{title}\n{content}"}},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+```
+
+```yaml
+# pipelines/daily_report.yaml
+pipelines:
+  - id: feishu_daily_report
+    name: 飞书日报
+    schedule:
+      type: cron
+      cron_expr: "0 18 * * 1-5"
+    tasks:
+      - id: send_daily
+        connector: feishu_daily
+        connector_config:
+          webhook_url: "${FEISHU_DAILY_WEBHOOK}"
+        action: send_report
+        action_kwargs:
+          title: "{{ today }} 日报"
+          content: "今日数据同步正常"
+```
+
 ---
 
 ## 与现有方案对比
@@ -848,15 +919,17 @@ $ python main.py
 添加一个新 Connector 的标准步骤：
 
 1. 在 `connectors/` 创建 `{name}.py`
-2. 继承 `BaseConnector`，实现 `fetch` / `push` / `ping`
+2. 继承 `BaseConnector`，实现你需要的方法（可以是 `fetch` / `push` / `ping`，也可以是任意自定义方法）
 3. 加 `@register_connector("{name}")` 装饰器
-4. 在 `tests/connectors/test_{name}.py` 写测试（覆盖 fetch、push、ping、连接失败）
+4. 在 `tests/connectors/test_{name}.py` 写测试（覆盖实际实现的方法和错误路径）
 5. 在 `examples/` 添加对应的 YAML 示例
 
 **Connector 实现要求：**
-- `ping()` 必须捕获所有异常，返回 True/False，不抛出
-- `fetch()` 失败时抛出异常（框架负责重试）
-- `push()` 要考虑幂等（重复执行不产生重复数据）
+- 只实现你用到的方法，不需要补空的 `fetch` / `push` / `ping`
+- 如果实现了 `ping()`，必须捕获所有异常并返回 `True` / `False`
+- 如果实现了 `fetch()`，失败时抛出异常（框架负责重试）
+- 如果实现了 `push()`，要考虑幂等（重复执行不产生重复数据）
+- 自定义 action 方法签名建议接受 `**kwargs`，以便框架传入上游数据
 - 不在 `__init__` 里做耗时操作，连接池/session 可以懒初始化
 
 ---

@@ -135,7 +135,13 @@ def ping(plugin_dir: str, config_path: str):
     table.add_column("Connector")
     table.add_column("Status")
     for name, ok in result.items():
-        table.add_row(name, "✅" if ok else "❌")
+        if ok is None:
+            status = "⏭️  not implemented"
+        elif ok:
+            status = "✅"
+        else:
+            status = "❌"
+        table.add_row(name, status)
     console.print(table)
 
 
@@ -178,6 +184,9 @@ def init_project(project_name: str):
                     "",
                     "@register_connector('demo')",
                     "class DemoConnector(BaseConnector):",
+                    "    # fetch / push / ping 都是可选的。",
+                    "    # 任何公开方法都可以作为 YAML 里的 action 使用。",
+                    "",
                     "    def fetch(self, **kwargs):",
                     "        return {'message': 'hello from demo connector'}",
                     "",
