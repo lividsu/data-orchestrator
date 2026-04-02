@@ -67,6 +67,11 @@ class Orchestrator:
         self._api_server: OrchestratorApiServer | None = None
         self._stop_event = threading.Event()
         self._loaded = False
+        self._live_output_lock = threading.Lock()
+        self._live_output_by_run: dict[str, str] = {}
+        self._live_output_finished: set[str] = set()
+        self._live_output_emitted_tasks: dict[str, set[str]] = {}
+        self._live_output_order: list[str] = []
         self._instance_id = f"orchestrator-{uuid4().hex}"
         _ORCHESTRATOR_INSTANCES[self._instance_id] = self
 
@@ -132,16 +137,22 @@ class Orchestrator:
         logger.info("Pipeline trigger requested: %s", pipeline_id)
         pipeline = self._pipelines[pipeline_id]
         notify_policy = self._notify_policies.get(pipeline_id)
-        return self._pipeline_runner.run(
-            pipeline,
-            log_writer=self._log_writer,
-            triggered_by=triggered_by,
-            notify_manager=self._notify_manager,
-            notify_policy=notify_policy,
-            run_id=run_id,
-            pipeline_hook_handler=self._handle_pipeline_hook,
-            runtime_kwargs=runtime_kwargs,
-        )
+        run_id = run_id or f"run-{uuid4().hex}"
+        self._start_live_output(run_id)
+        try:
+            return self._pipeline_runner.run(
+                pipeline,
+                log_writer=self._log_writer,
+                triggered_by=triggered_by,
+                notify_manager=self._notify_manager,
+                notify_policy=notify_policy,
+                run_id=run_id,
+                pipeline_hook_handler=self._handle_pipeline_hook,
+                runtime_kwargs=runtime_kwargs,
+                task_output_callback=lambda task_id, text: self._append_live_output(run_id, task_id, text),
+            )
+        finally:
+            self._finish_live_output(run_id)
 
     def trigger_async(self, pipeline_id: str, runtime_kwargs: dict[str, Any] | None = None) -> str:
         run_id = f"run-{uuid4().hex}"
@@ -153,6 +164,45 @@ class Orchestrator:
         self._running_futures.add(future)
         future.add_done_callback(lambda f: self._running_futures.discard(f))
         return run_id
+
+    def get_live_output(self, run_id: str) -> dict[str, Any]:
+        with self._live_output_lock:
+            return {
+                "run_id": run_id,
+                "output": self._live_output_by_run.get(run_id, ""),
+                "finished": run_id in self._live_output_finished,
+            }
+
+    def _start_live_output(self, run_id: str) -> None:
+        with self._live_output_lock:
+            self._live_output_by_run[run_id] = ""
+            self._live_output_finished.discard(run_id)
+            self._live_output_emitted_tasks[run_id] = set()
+            self._live_output_order.append(run_id)
+            while len(self._live_output_order) > 50:
+                oldest_run_id = self._live_output_order.pop(0)
+                self._live_output_by_run.pop(oldest_run_id, None)
+                self._live_output_finished.discard(oldest_run_id)
+                self._live_output_emitted_tasks.pop(oldest_run_id, None)
+
+    def _append_live_output(self, run_id: str, task_id: str, text: str) -> None:
+        if not text:
+            return
+        with self._live_output_lock:
+            if run_id not in self._live_output_by_run:
+                return
+            emitted_tasks = self._live_output_emitted_tasks.setdefault(run_id, set())
+            if task_id not in emitted_tasks:
+                emitted_tasks.add(task_id)
+                if self._live_output_by_run[run_id]:
+                    self._live_output_by_run[run_id] += "\n"
+                self._live_output_by_run[run_id] += f"[{task_id}]\n"
+            self._live_output_by_run[run_id] += text
+
+    def _finish_live_output(self, run_id: str) -> None:
+        with self._live_output_lock:
+            if run_id in self._live_output_by_run:
+                self._live_output_finished.add(run_id)
 
     def pause(self, pipeline_id: str):
         scheduler = self._get_scheduler()

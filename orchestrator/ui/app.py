@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import re
 import time
 from datetime import datetime
 from datetime import timezone
@@ -67,6 +68,9 @@ class OrchestratorApiClient:
     def get_upcoming_runs(self, hours: int = 2) -> list[dict[str, str]]:
         return self._get(f"/upcoming?hours={hours}")
 
+    def get_live_output(self, run_id: str) -> dict[str, Any]:
+        return self._get(f"/live-output/{run_id}")
+
     def trigger_async(self, pipeline_id: str, runtime_kwargs: dict[str, Any] | None = None) -> str:
         payload = {}
         if runtime_kwargs:
@@ -109,17 +113,16 @@ def render_app(default_db_url: str = "sqlite:///orchestrator.db") -> None:
         db_url = orchestrator.settings.db_url
     reader = LogReader(db_url=db_url)
     run_id = st.query_params.get("run_id", "")
-    default_page = "Dashboard"
-    if run_id:
-        default_page = "Run Detail"
+    nav_options = ["📊 Dashboard", "⚡ Pipelines", "📝 Run Detail", "🔍 Log Search"]
+    if "nav_page" not in st.session_state:
+        st.session_state["nav_page"] = "📝 Run Detail" if run_id else "📊 Dashboard"
+    pending_nav_page = st.session_state.pop("pending_nav_page", None)
+    if pending_nav_page in nav_options:
+        st.session_state["nav_page"] = pending_nav_page
         
     tz_option = st.sidebar.selectbox("时区", ["pst", "cst", "+00"], index=1)
     
-    page = st.sidebar.radio(
-        "导航", 
-        ["📊 Dashboard", "⚡ Pipelines", "📝 Run Detail", "🔍 Log Search"], 
-        index=["Dashboard", "Pipelines", "Run Detail", "Log Search"].index(default_page)
-    )
+    page = st.sidebar.radio("导航", nav_options, key="nav_page")
     if page == "📊 Dashboard":
         page_dashboard(st, reader, orchestrator, tz_option)
         return
@@ -138,7 +141,7 @@ def page_dashboard(st, reader: LogReader, orchestrator: Any | None, tz_option: s
         st.title("📊 今日总览")
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🔄 刷新", key="btn_refresh_dashboard", use_container_width=True):
+        if st.button("🔄 刷新", key="btn_refresh_dashboard", width="stretch"):
             st.rerun()
     
     stats = reader.get_dashboard_stats(hours=24)
@@ -156,7 +159,7 @@ def page_dashboard(st, reader: LogReader, orchestrator: Any | None, tz_option: s
         import pandas as pd
 
         trend_df = pd.DataFrame(trend_data).set_index("hour")
-        st.line_chart(trend_df, use_container_width=True)
+        st.line_chart(trend_df, width="stretch")
     except Exception:
         st.table(trend_data)
         
@@ -173,8 +176,9 @@ def page_dashboard(st, reader: LogReader, orchestrator: Any | None, tz_option: s
                 cols[0].markdown(f"**{run['pipeline_name']}**")
                 cols[1].caption(_format_time(run["started_at"], tz_option))
                 cols[2].markdown(_status_tag(run["status"]), unsafe_allow_html=True)
-                if cols[3].button("🔍 查看", key=f"recent-{run['id']}", use_container_width=True):
+                if cols[3].button("🔍 查看", key=f"recent-{run['id']}", width="stretch"):
                     st.query_params["run_id"] = run["id"]
+                    st.session_state["pending_nav_page"] = "📝 Run Detail"
                     st.rerun()
                 
     with col_right:
@@ -200,7 +204,7 @@ def page_pipelines(st, orchestrator: Any | None, tz_option: str) -> None:
         st.title("⚡ Pipeline 管理")
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🔄 刷新", key="btn_refresh_pipelines", use_container_width=True):
+        if st.button("🔄 刷新", key="btn_refresh_pipelines", width="stretch"):
             st.rerun()
     if orchestrator is None:
         st.warning("⚠️ 当前未连接调度器实例，请使用 orchestrator run 或 orchestrator ui 启动。")
@@ -211,6 +215,9 @@ def page_pipelines(st, orchestrator: Any | None, tz_option: str) -> None:
         return
         
     for item in pipelines:
+        pipeline_detail = orchestrator.get_pipeline(item["id"])
+        runtime_keys = _collect_runtime_keys(pipeline_detail)
+        task_param_snapshot = _build_task_param_snapshot(pipeline_detail)
         with st.container(border=True):
             cols = st.columns([1.5, 2, 2, 2, 1.5, 2.5])
             cols[0].markdown(f"**ID:** `{item['id']}`")
@@ -223,6 +230,15 @@ def page_pipelines(st, orchestrator: Any | None, tz_option: str) -> None:
             btn_cols = action_col.columns(2)
             
             def _render_trigger_form(pipeline_id: str):
+                st.caption("系统内置变量: run_id, pipeline_id, now, now_utc, today, yesterday")
+                if runtime_keys:
+                    st.markdown("**当前配置中使用到的变量**")
+                    st.code(json.dumps({key: "" for key in runtime_keys}, ensure_ascii=False, indent=2), language="json")
+                else:
+                    st.info("当前 Pipeline 未检测到 action_kwargs 中的自定义模板变量，可按需填写键值。")
+                if task_param_snapshot:
+                    with st.expander("查看当前任务参数模板"):
+                        st.json(task_param_snapshot, expanded=False)
                 trigger_kwargs_str = st.text_area(
                     "单次触发变量 (JSON)",
                     value="{\n}",
@@ -230,7 +246,7 @@ def page_pipelines(st, orchestrator: Any | None, tz_option: str) -> None:
                     height=100,
                     help="配置单次触发的环境变量（如 {\"biz_date\": \"2024-01-01\"}），将合并到 Jinja2 上下文中。"
                 )
-                if st.button("确认触发", key=f"trigger-btn-{pipeline_id}", use_container_width=True):
+                if st.button("确认触发", key=f"trigger-btn-{pipeline_id}", width="stretch"):
                     try:
                         kwargs = json.loads(trigger_kwargs_str)
                         if not isinstance(kwargs, dict):
@@ -238,22 +254,24 @@ def page_pipelines(st, orchestrator: Any | None, tz_option: str) -> None:
                         else:
                             run_id = orchestrator.trigger_async(pipeline_id, runtime_kwargs=kwargs)
                             st.success(f"已触发，run_id={run_id}")
-                            time.sleep(1)
+                            if run_id:
+                                st.query_params["run_id"] = run_id
+                                st.session_state["pending_nav_page"] = "📝 Run Detail"
                             st.rerun()
                     except json.JSONDecodeError:
                         st.error("JSON 格式错误")
 
             if hasattr(st, "popover"):
-                with btn_cols[0].popover("🚀 触发", use_container_width=True):
+                with btn_cols[0].popover("🚀 触发", width="stretch"):
                     _render_trigger_form(item["id"])
             else:
                 with st.expander(f"🚀 触发 {item['id']}"):
                     _render_trigger_form(item["id"])
                     
-            if item["status"] == "active" and btn_cols[1].button("⏸️ 暂停", key=f"pause-{item['id']}", use_container_width=True):
+            if item["status"] == "active" and btn_cols[1].button("⏸️ 暂停", key=f"pause-{item['id']}", width="stretch"):
                 orchestrator.pause(item["id"])
                 st.rerun()
-            if item["status"] == "paused" and btn_cols[1].button("▶️ 恢复", key=f"resume-{item['id']}", use_container_width=True):
+            if item["status"] == "paused" and btn_cols[1].button("▶️ 恢复", key=f"resume-{item['id']}", width="stretch"):
                 orchestrator.resume(item["id"])
                 st.rerun()
 
@@ -278,6 +296,17 @@ def page_run_detail(st, reader: LogReader, orchestrator: Any | None, run_id: str
         cols2[0].markdown(f"**开始:** {_format_time(run['started_at'], tz_option)}")
         cols2[1].markdown(f"**结束:** {_format_time(run.get('finished_at'), tz_option) if run.get('finished_at') else '-'}")
         cols2[2].markdown(f"**耗时:** {(run.get('duration_seconds') or 0):.2f}s")
+
+    auto_refresh = False
+    live_output = ""
+    if run["status"] == "running":
+        auto_refresh = st.checkbox("自动刷新（2秒）", value=True, key=f"run-auto-refresh-{run_id}")
+        live_output = _get_live_output(orchestrator, run_id)
+        st.subheader("🖥️ 实时输出")
+        if live_output:
+            st.code(live_output, language="text")
+        else:
+            st.info("任务运行中，等待实时输出...")
         
     tasks = reader.get_task_runs(run_id)
     
@@ -286,7 +315,7 @@ def page_run_detail(st, reader: LogReader, orchestrator: Any | None, run_id: str
     try:
         import pandas as pd
         df = pd.DataFrame(gantt_rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
     except Exception:
         st.table(gantt_rows)
         
@@ -316,6 +345,10 @@ def page_run_detail(st, reader: LogReader, orchestrator: Any | None, run_id: str
     status_by_task = {item["task_id"]: item["status"] for item in tasks}
     with st.container(border=True):
         st.markdown(_build_dag_svg(pipeline.tasks, status_by_task), unsafe_allow_html=True)
+
+    if run["status"] == "running" and auto_refresh:
+        time.sleep(2)
+        st.rerun()
 
 
 def page_log_search(st, reader: LogReader, tz_option: str) -> None:
@@ -379,7 +412,7 @@ def page_log_search(st, reader: LogReader, tz_option: str) -> None:
     if display_rows:
         import pandas as pd
         df = pd.DataFrame(display_rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
         
         st.markdown("---")
         col1, col2 = st.columns([3, 1])
@@ -387,8 +420,9 @@ def page_log_search(st, reader: LogReader, tz_option: str) -> None:
             selected_run_id = st.selectbox("选择要查看详情的 run_id:", [r["run_id"] for r in display_rows])
         with col2:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("👁️ 查看详情", use_container_width=True):
+            if st.button("👁️ 查看详情", width="stretch"):
                 st.query_params["run_id"] = selected_run_id
+                st.session_state["pending_nav_page"] = "📝 Run Detail"
                 st.rerun()
     else:
         st.info("未找到匹配的日志记录。")
@@ -416,6 +450,71 @@ def _build_gantt_rows(task_rows: list[dict[str, Any]], tz_option: str) -> list[d
             }
         )
     return rows
+
+
+def _collect_runtime_keys(pipeline: Any | None) -> list[str]:
+    if pipeline is None:
+        return []
+    tasks = pipeline.get("tasks", []) if isinstance(pipeline, dict) else getattr(pipeline, "tasks", [])
+    keys: set[str] = set()
+    for task in tasks:
+        action_kwargs = task.get("action_kwargs", {}) if isinstance(task, dict) else getattr(task, "action_kwargs", {})
+        for text in _iter_template_strings(action_kwargs):
+            for expr in re.findall(r"\{\{\s*([^{}]+?)\s*\}\}", text):
+                token = re.split(r"[|.\[\]\s(]", expr.strip(), maxsplit=1)[0]
+                if re.match(r"^[A-Za-z_]\w*$", token) and token not in {"true", "false", "none"}:
+                    keys.add(token)
+    return sorted(keys)
+
+
+def _get_live_output(orchestrator: Any | None, run_id: str) -> str:
+    if orchestrator is None or not hasattr(orchestrator, "get_live_output"):
+        return ""
+    try:
+        payload = orchestrator.get_live_output(run_id)
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("output") or "")
+
+
+def _iter_template_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        result: list[str] = []
+        for item in value.values():
+            result.extend(_iter_template_strings(item))
+        return result
+    if isinstance(value, list):
+        result: list[str] = []
+        for item in value:
+            result.extend(_iter_template_strings(item))
+        return result
+    return []
+
+
+def _build_task_param_snapshot(pipeline: Any | None) -> dict[str, Any]:
+    if pipeline is None:
+        return {}
+    tasks = pipeline.get("tasks", []) if isinstance(pipeline, dict) else getattr(pipeline, "tasks", [])
+    snapshot: dict[str, Any] = {}
+    for task in tasks:
+        task_id = task.get("id", "") if isinstance(task, dict) else getattr(task, "id", "")
+        action = task.get("action", "") if isinstance(task, dict) else getattr(task, "action", "")
+        action_kwargs = task.get("action_kwargs", {}) if isinstance(task, dict) else getattr(task, "action_kwargs", {})
+        timeout_seconds = task.get("timeout_seconds") if isinstance(task, dict) else getattr(task, "timeout_seconds", None)
+        retry = task.get("retry", {}) if isinstance(task, dict) else getattr(task, "retry", {})
+        if hasattr(retry, "model_dump"):
+            retry = retry.model_dump()
+        snapshot[task_id] = {
+            "action": action,
+            "action_kwargs": action_kwargs,
+            "timeout_seconds": timeout_seconds,
+            "retry": retry,
+        }
+    return snapshot
 
 
 def _status_tag(status: str) -> str:

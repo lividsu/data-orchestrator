@@ -48,6 +48,10 @@ class OrchestratorApiServer:
                     hours = int((query.get("hours") or ["2"])[0])
                     self._ok(orchestrator.get_upcoming_runs(hours=hours))
                     return
+                if parsed.path.startswith("/live-output/"):
+                    run_id = parsed.path[len("/live-output/") :]
+                    self._ok(orchestrator.get_live_output(run_id))
+                    return
                 self._not_found("route not found")
 
             def do_POST(self):

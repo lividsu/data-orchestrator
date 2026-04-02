@@ -43,6 +43,7 @@ class TaskRunner:
         upstream_results: dict[str, TaskResult] | None = None,
         runtime_context: dict[str, Any] | None = None,
         connector_instance: Any | None = None,
+        output_callback: Callable[[str], None] | None = None,
     ) -> TaskResult:
         if task.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than 0.")
@@ -125,7 +126,13 @@ class TaskRunner:
                         f"Connector '{task.connector_name}' does not have action '{task.action}'. "
                         f"Available actions: {available_actions}"
                     )
-                return self._execute_with_terminal_capture(action, kwargs, task.timeout_seconds, result)
+                return self._execute_with_terminal_capture(
+                    action,
+                    kwargs,
+                    task.timeout_seconds,
+                    result,
+                    output_callback=output_callback,
+                )
 
             result.output = execute()
             result.status = TaskStatus.SUCCESS
@@ -165,8 +172,9 @@ class TaskRunner:
         kwargs: dict[str, Any],
         timeout_seconds: float,
         result: TaskResult,
+        output_callback: Callable[[str], None] | None = None,
     ) -> Any:
-        output_buffer = io.StringIO()
+        output_buffer = _LiveStringBuffer(output_callback=output_callback)
         handler = _ThreadLogCaptureHandler(output_buffer)
         root_logger = logging.getLogger()
         root_logger.addHandler(handler)
@@ -256,6 +264,7 @@ class PipelineRunner:
         run_id: str | None = None,
         pipeline_hook_handler: Callable[[str, PipelineResult], None] | None = None,
         runtime_kwargs: dict[str, Any] | None = None,
+        task_output_callback: Callable[[str, str], None] | None = None,
     ) -> PipelineResult:
         run_id = run_id or generate_run_id()
         started_at = datetime.now(timezone.utc)
@@ -287,6 +296,7 @@ class PipelineRunner:
                             runtime_context,
                             connector_pool,
                             connector_pool_lock,
+                            task_output_callback,
                         )
                         for task in layer
                     ]
@@ -298,6 +308,7 @@ class PipelineRunner:
                         runtime_context,
                         connector_pool,
                         connector_pool_lock,
+                        task_output_callback,
                     )
                 for result in layer_results:
                     all_results[result.task_id] = result
@@ -375,14 +386,19 @@ class PipelineRunner:
         runtime_context: dict[str, Any],
         connector_pool: dict[str, Any],
         connector_pool_lock: threading.Lock,
+        task_output_callback: Callable[[str, str], None] | None = None,
     ) -> TaskResult:
         upstream_results = {task_id: all_results[task_id] for task_id in task.depends_on if task_id in all_results}
         connector = self._get_or_create_connector(task, connector_pool, connector_pool_lock)
+        output_callback: Callable[[str], None] | None = None
+        if task_output_callback is not None:
+            output_callback = lambda text: task_output_callback(task.id, text)
         return self.task_runner.run(
             task,
             upstream_results=upstream_results,
             runtime_context=runtime_context,
             connector_instance=connector,
+            output_callback=output_callback,
         )
 
     def _run_layer_concurrently(
@@ -393,6 +409,7 @@ class PipelineRunner:
         runtime_context: dict[str, Any],
         connector_pool: dict[str, Any],
         connector_pool_lock: threading.Lock,
+        task_output_callback: Callable[[str, str], None] | None = None,
     ) -> list[TaskResult]:
         ordered_results: dict[str, TaskResult] = {}
         with ThreadPoolExecutor(max_workers=min(max_concurrency, len(layer))) as executor:
@@ -404,6 +421,7 @@ class PipelineRunner:
                     runtime_context,
                     connector_pool,
                     connector_pool_lock,
+                    task_output_callback,
                 ): task.id
                 for task in layer
             }
@@ -451,6 +469,19 @@ class _ThreadLogCaptureHandler(logging.Handler):
         if self.thread_id is None or record.thread != self.thread_id:
             return
         self.output_buffer.write(f"{self.format(record)}\n")
+
+
+class _LiveStringBuffer(io.StringIO):
+    def __init__(self, output_callback: Callable[[str], None] | None = None) -> None:
+        super().__init__()
+        self._output_callback = output_callback
+
+    def write(self, text: str) -> int:
+        if not isinstance(text, str):
+            text = str(text)
+        if self._output_callback is not None and text:
+            self._output_callback(text)
+        return super().write(text)
 
 
 class _ThreadOutputProxy:
