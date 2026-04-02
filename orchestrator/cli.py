@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import threading
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -9,7 +9,6 @@ from rich.table import Table
 from orchestrator.config.loader import ConfigLoader
 from orchestrator.core.scheduler import Orchestrator
 from orchestrator.log.reader import LogReader
-from orchestrator.ui.app import run_ui
 
 console = Console()
 
@@ -53,8 +52,7 @@ def ui(config_path: str, plugin_dir: str, host: str, port: int, headless: bool):
 @click.option("--wait/--async", "wait_for_finish", default=True)
 def trigger(pipeline_id: str, config_path: str, plugin_dir: str, wait_for_finish: bool):
     app = Orchestrator(config_dir=config_path, plugin_dir=plugin_dir)
-    app.load_plugins(plugin_dir)
-    app.load_config(config_path)
+    app.ensure_loaded()
     if wait_for_finish:
         result = app.trigger(pipeline_id, triggered_by="manual")
         console.print(result.model_dump_json(indent=2))
@@ -108,10 +106,7 @@ def status(pipeline_id: str, db_url: str):
 @click.option("--plugins", "plugin_dir", default="./connectors/")
 def pause(pipeline_id: str, config_path: str, plugin_dir: str):
     app = Orchestrator(config_dir=config_path, plugin_dir=plugin_dir)
-    app.load_plugins(plugin_dir)
-    app.load_config(config_path)
-    if not app._scheduler.running:
-        app._scheduler.start()
+    app.ensure_loaded()
     app.pause(pipeline_id)
     console.print(f"paused {pipeline_id}")
     app.stop()
@@ -123,10 +118,7 @@ def pause(pipeline_id: str, config_path: str, plugin_dir: str):
 @click.option("--plugins", "plugin_dir", default="./connectors/")
 def resume(pipeline_id: str, config_path: str, plugin_dir: str):
     app = Orchestrator(config_dir=config_path, plugin_dir=plugin_dir)
-    app.load_plugins(plugin_dir)
-    app.load_config(config_path)
-    if not app._scheduler.running:
-        app._scheduler.start()
+    app.ensure_loaded()
     app.resume(pipeline_id)
     console.print(f"resumed {pipeline_id}")
     app.stop()
@@ -134,9 +126,10 @@ def resume(pipeline_id: str, config_path: str, plugin_dir: str):
 
 @main.command("ping")
 @click.option("--plugins", "plugin_dir", default="./connectors/")
-def ping(plugin_dir: str):
-    app = Orchestrator(plugin_dir=plugin_dir)
-    app.load_plugins(plugin_dir)
+@click.option("--config", "config_path", default="./pipelines/")
+def ping(plugin_dir: str, config_path: str):
+    app = Orchestrator(plugin_dir=plugin_dir, config_dir=config_path)
+    app.ensure_loaded()
     result = app.ping_all()
     table = Table(title="Connector Health")
     table.add_column("Connector")
@@ -146,9 +139,82 @@ def ping(plugin_dir: str):
     console.print(table)
 
 
+@main.command("init")
+@click.argument("project_name")
+def init_project(project_name: str):
+    project_path = Path(project_name).resolve()
+    project_path.mkdir(parents=True, exist_ok=True)
+    (project_path / "connectors").mkdir(exist_ok=True)
+    (project_path / "pipelines").mkdir(exist_ok=True)
+
+    main_py = project_path / "main.py"
+    if not main_py.exists():
+        main_py.write_text(
+            "\n".join(
+                [
+                    "from orchestrator import Orchestrator",
+                    "",
+                    "",
+                    "def main() -> None:",
+                    "    app = Orchestrator(config_dir='./pipelines', plugin_dir='./connectors')",
+                    "    app.start(ui=False)",
+                    "",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    main()",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    demo_connector = project_path / "connectors" / "demo.py"
+    if not demo_connector.exists():
+        demo_connector.write_text(
+            "\n".join(
+                [
+                    "from orchestrator import BaseConnector, register_connector",
+                    "",
+                    "",
+                    "@register_connector('demo')",
+                    "class DemoConnector(BaseConnector):",
+                    "    def fetch(self, **kwargs):",
+                    "        return {'message': 'hello from demo connector'}",
+                    "",
+                    "    def push(self, data=None, **kwargs):",
+                    "        return {'ok': True, 'received': data}",
+                    "",
+                    "    def ping(self):",
+                    "        return True",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    demo_pipeline = project_path / "pipelines" / "demo.yaml"
+    if not demo_pipeline.exists():
+        demo_pipeline.write_text(
+            "\n".join(
+                [
+                    "pipelines:",
+                    "  - id: demo_pipeline",
+                    "    schedule:",
+                    "      type: manual",
+                    "    tasks:",
+                    "      - id: fetch_demo",
+                    "        connector: demo",
+                    "        action: fetch",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    console.print(f"Initialized project at {project_path}")
+
+
 
 
 
 if __name__ == "__main__":
     main()
-

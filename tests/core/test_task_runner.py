@@ -169,6 +169,31 @@ def test_upstream_output_passed_as_data():
     assert PushConnector.last_data == {"orders": [1, 2, 3]}
 
 
+def test_pass_output_from_failed_upstream_marks_skipped():
+    @register_connector("skip_push_connector")
+    class PushConnector(BaseConnector):
+        def fetch(self, **kwargs):
+            return {"ok": True}
+
+        def push(self, data=None, **kwargs):
+            return {"received": data}
+
+        def ping(self):
+            return True
+
+    upstream = TaskResult(task_id="fetch_orders", task_name="fetch_orders", status=TaskStatus.FAILED, output=None)
+    task = Task(
+        id="t5_skip",
+        connector="skip_push_connector",
+        action="push",
+        pass_output_from="fetch_orders",
+    )
+    result = TaskRunner().run(task, upstream_results={"fetch_orders": upstream})
+
+    assert result.status == TaskStatus.SKIPPED
+    assert "skip current task" in (result.error_message or "")
+
+
 def test_on_failure_hook_called(monkeypatch):
     @register_connector("hook_failure_connector")
     class HookFailureConnector(BaseConnector):

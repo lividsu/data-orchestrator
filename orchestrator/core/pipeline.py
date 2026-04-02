@@ -36,10 +36,11 @@ class Pipeline(BaseModel):
     id: str
     name: str = ""
     description: str = ""
-    schedule: dict[str, Any] = Field(default_factory=dict)
     tasks: list[Task] = Field(default_factory=list)
     max_concurrency: int = 4
     stop_on_failure: bool = True
+    on_success: str | None = None
+    on_failure: str | None = None
 
     @field_validator("max_concurrency")
     @classmethod
@@ -70,10 +71,11 @@ def parse_pipeline(raw: dict[str, Any]) -> Pipeline:
         id=raw["id"],
         name=raw.get("name", ""),
         description=raw.get("description", ""),
-        schedule=raw.get("schedule", {}),
         tasks=[Task(**task_data) for task_data in raw.get("tasks", [])],
         max_concurrency=raw.get("max_concurrency", 4),
         stop_on_failure=raw.get("stop_on_failure", True),
+        on_success=raw.get("on_success"),
+        on_failure=raw.get("on_failure"),
     )
 
 

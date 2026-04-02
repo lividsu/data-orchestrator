@@ -220,3 +220,103 @@ def test_max_concurrency_one_degrades_to_serial():
     PipelineRunner().run(pipeline)
     duration = time.time() - started
     assert duration >= 0.55
+
+
+def test_runtime_template_context_rendered_for_action_kwargs():
+    captured = {}
+
+    @register_connector("runtime_template")
+    class RuntimeTemplateConnector(BaseConnector):
+        def fetch(self, **kwargs):
+            captured.update(kwargs)
+            return kwargs
+
+        def push(self, data=None, **kwargs):
+            return {"ok": True}
+
+        def ping(self):
+            return True
+
+    pipeline = Pipeline(
+        id="p_runtime_template",
+        tasks=[
+            Task(
+                id="A",
+                connector="runtime_template",
+                action="fetch",
+                action_kwargs={
+                    "rid": "{{ run_id }}",
+                    "pid": "{{ pipeline_id }}",
+                    "dt": "{{ yesterday }}",
+                },
+            ),
+        ],
+    )
+    run_id = "run-fixed"
+    PipelineRunner().run(pipeline, run_id=run_id)
+    assert captured["rid"] == run_id
+    assert captured["pid"] == "p_runtime_template"
+    assert captured["dt"] != "{{ yesterday }}"
+
+
+def test_connector_reuse_and_single_close_per_pipeline_run():
+    class Counter:
+        initialize_calls = 0
+        close_calls = 0
+
+    @register_connector("pooling")
+    class PoolingConnector(BaseConnector):
+        def initialize(self):
+            Counter.initialize_calls += 1
+            super().initialize()
+
+        def fetch(self, **kwargs):
+            return {"ok": True}
+
+        def push(self, data=None, **kwargs):
+            return {"ok": True}
+
+        def ping(self):
+            return True
+
+        def close(self):
+            Counter.close_calls += 1
+
+    pipeline = Pipeline(
+        id="pooling_pipeline",
+        tasks=[
+            Task(id="a", connector="pooling", action="fetch"),
+            Task(id="b", connector="pooling", action="fetch", depends_on=["a"]),
+        ],
+    )
+    result = PipelineRunner().run(pipeline)
+    assert result.status == "success"
+    assert Counter.initialize_calls == 1
+    assert Counter.close_calls == 1
+
+
+def test_pipeline_level_hook_handler_called():
+    calls = []
+
+    @register_connector("hook_pipeline")
+    class HookPipelineConnector(BaseConnector):
+        def fetch(self, **kwargs):
+            return {"ok": True}
+
+        def push(self, data=None, **kwargs):
+            return {"ok": True}
+
+        def ping(self):
+            return True
+
+    pipeline = Pipeline(
+        id="hooked_pipeline",
+        on_success="trigger:next_pipeline",
+        tasks=[Task(id="a", connector="hook_pipeline", action="fetch")],
+    )
+
+    def hook_handler(hook_name, result):
+        calls.append((hook_name, result.pipeline_id, result.status))
+
+    PipelineRunner().run(pipeline, pipeline_hook_handler=hook_handler)
+    assert calls == [("trigger:next_pipeline", "hooked_pipeline", "success")]

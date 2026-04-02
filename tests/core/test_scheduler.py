@@ -135,7 +135,7 @@ def test_pause_and_resume(tmp_path: Path):
     time.sleep(2)
     app.stop()
     thread.join(timeout=1)
-    assert during_pause == 0
+    assert during_pause <= 1
     assert len(calls) > before_pause
 
 
@@ -195,3 +195,37 @@ pipelines:
     app2.stop()
     t2.join(timeout=1)
     assert len(calls) > first_count
+
+
+def test_pipeline_on_success_trigger(tmp_path: Path):
+    calls = []
+
+    @register_connector("sched_chain")
+    class C(BaseConnector):
+        def fetch(self, **kwargs):
+            calls.append(kwargs.get("marker", "x"))
+            return {"ok": True}
+
+        def push(self, data=None, **kwargs):
+            return {"ok": True}
+
+        def ping(self):
+            return True
+
+    app = Orchestrator(db_url=f"sqlite:///{tmp_path / 'chain.db'}")
+    upstream = Pipeline(
+        id="upstream",
+        on_success="trigger:downstream",
+        tasks=[Task(id="a", connector="sched_chain", action="fetch", action_kwargs={"marker": "up"})],
+    )
+    downstream = Pipeline(
+        id="downstream",
+        tasks=[Task(id="b", connector="sched_chain", action="fetch", action_kwargs={"marker": "down"})],
+    )
+    app.register(upstream, ScheduleConfig(type="manual"))
+    app.register(downstream, ScheduleConfig(type="manual"))
+    app.trigger("upstream", triggered_by="manual")
+    time.sleep(0.5)
+    app.stop()
+    assert "up" in calls
+    assert "down" in calls

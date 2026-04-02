@@ -52,20 +52,22 @@ def test_cli_help_commands():
 
 
 def test_cli_run_no_ui(monkeypatch):
-    started = {"called": False}
+    started = {"called": False, "ui": None}
 
     class FakeOrchestrator:
         def __init__(self, *args, **kwargs):
             pass
 
-        def start(self):
+        def start(self, **kwargs):
             started["called"] = True
+            started["ui"] = kwargs.get("ui")
 
     monkeypatch.setattr(cli, "Orchestrator", FakeOrchestrator)
     runner = CliRunner()
     result = runner.invoke(main, ["run", "--no-ui"])
     assert result.exit_code == 0
     assert started["called"] is True
+    assert started["ui"] is False
 
 
 def test_cli_run_with_ui(monkeypatch):
@@ -73,21 +75,18 @@ def test_cli_run_with_ui(monkeypatch):
 
     class FakeOrchestrator:
         def __init__(self, *args, **kwargs):
-            captured["app"] = self
+            pass
 
-    def fake_start_with_ui(app, host, port):
-        captured["host"] = host
-        captured["port"] = port
-        captured["same_app"] = app is captured["app"]
+        def start(self, **kwargs):
+            captured["kwargs"] = kwargs
 
     monkeypatch.setattr(cli, "Orchestrator", FakeOrchestrator)
-    monkeypatch.setattr(cli, "_start_with_ui", fake_start_with_ui)
     runner = CliRunner()
     result = runner.invoke(main, ["run", "--host", "127.0.0.1", "--port", "9000"])
     assert result.exit_code == 0
-    assert captured["same_app"] is True
-    assert captured["host"] == "127.0.0.1"
-    assert captured["port"] == 9000
+    assert captured["kwargs"]["ui"] is True
+    assert captured["kwargs"]["host"] == "127.0.0.1"
+    assert captured["kwargs"]["port"] == 9000
 
 
 def test_cli_ui_command(monkeypatch):
@@ -97,13 +96,12 @@ def test_cli_ui_command(monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-    def fake_start_with_ui(app, host, port):
-        captured["called"] = True
-        captured["host"] = host
-        captured["port"] = port
+        def start(self, **kwargs):
+            captured["called"] = True
+            captured["host"] = kwargs.get("host")
+            captured["port"] = kwargs.get("port")
 
     monkeypatch.setattr(cli, "Orchestrator", FakeOrchestrator)
-    monkeypatch.setattr(cli, "_start_with_ui", fake_start_with_ui)
     runner = CliRunner()
     result = runner.invoke(main, ["ui"])
     assert result.exit_code == 0
@@ -116,10 +114,7 @@ def test_cli_trigger_async(monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def load_plugins(self, *args, **kwargs):
-            return None
-
-        def load_config(self, *args, **kwargs):
+        def ensure_loaded(self):
             return None
 
         def trigger_async(self, pipeline_id):
@@ -136,19 +131,13 @@ def test_cli_pause_resume(monkeypatch):
     calls = []
 
     class FakeScheduler:
-        running = False
-
-        def start(self):
-            self.running = True
+        pass
 
     class FakeOrchestrator:
         def __init__(self, *args, **kwargs):
             self._scheduler = FakeScheduler()
 
-        def load_plugins(self, *args, **kwargs):
-            return None
-
-        def load_config(self, *args, **kwargs):
+        def ensure_loaded(self):
             return None
 
         def pause(self, pipeline_id):
@@ -175,7 +164,7 @@ def test_cli_ping(monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def load_plugins(self, *args, **kwargs):
+        def ensure_loaded(self):
             return None
 
         def ping_all(self):
@@ -187,3 +176,13 @@ def test_cli_ping(monkeypatch):
     assert result.exit_code == 0
     assert "a" in result.output
     assert "b" in result.output
+
+
+def test_cli_init_project(tmp_path: Path):
+    runner = CliRunner()
+    target = tmp_path / "demo_project"
+    result = runner.invoke(main, ["init", str(target)])
+    assert result.exit_code == 0
+    assert (target / "main.py").exists()
+    assert (target / "connectors" / "demo.py").exists()
+    assert (target / "pipelines" / "demo.yaml").exists()

@@ -29,5 +29,8 @@ orchestrator = "orchestrator.cli:main"
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+include = ["orchestrator*"]
+
 [tool.coverage.run]
 omit = ["orchestrator/ui/*"]

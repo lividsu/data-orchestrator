@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
-from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from orchestrator.config.loader import ConfigLoader
-from orchestrator.config.loader import get_template_context
+from orchestrator.config.settings import Settings
 from orchestrator.exceptions import ConfigValidationError
 
 
@@ -73,22 +71,7 @@ pipelines:
     assert pipeline.tasks[0].connector_config["dsn"] == "fallback"
 
 
-def test_template_variables_rendered(monkeypatch, tmp_path: Path):
-    frozen_now = datetime(2024, 3, 15, 8, 0, 0)
-
-    def fake_context():
-        return {
-            "now": frozen_now.isoformat(),
-            "today": frozen_now.strftime("%Y-%m-%d"),
-            "yesterday": (frozen_now - timedelta(days=1)).strftime("%Y-%m-%d"),
-            "yesterday_iso": (frozen_now - timedelta(days=1)).isoformat(),
-            "week_start": "2024-03-11",
-            "month_start": "2024-03-01",
-            "run_id": "r",
-            "pipeline_id": "",
-        }
-
-    monkeypatch.setattr("orchestrator.config.loader.get_template_context", fake_context)
+def test_template_variables_not_rendered_during_load(tmp_path: Path):
     yaml_file = tmp_path / "pipe.yaml"
     yaml_file.write_text(
         """
@@ -105,7 +88,7 @@ pipelines:
         encoding="utf-8",
     )
     pipeline = ConfigLoader.load(str(yaml_file))[0].pipeline
-    assert pipeline.tasks[0].action_kwargs["dt"] == "2024-03-14"
+    assert pipeline.tasks[0].action_kwargs["dt"] == "{{ yesterday }}"
 
 
 def test_cyclic_dependency_in_yaml(tmp_path: Path):
@@ -129,3 +112,31 @@ pipelines:
     )
     with pytest.raises(ConfigValidationError):
         ConfigLoader.load(str(yaml_file))
+
+
+def test_task_defaults_from_settings(tmp_path: Path):
+    yaml_file = tmp_path / "pipe.yaml"
+    yaml_file.write_text(
+        """
+pipelines:
+  - id: p1
+    schedule: {type: manual}
+    tasks:
+      - id: t1
+        connector: demo
+        action: fetch
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        default_retry_times=7,
+        default_retry_delay=1.5,
+        default_retry_backoff=3.0,
+        default_timeout_seconds=99.0,
+    )
+    pipeline = ConfigLoader.load(str(yaml_file), settings=settings)[0].pipeline
+    task = pipeline.tasks[0]
+    assert task.retry.times == 7
+    assert task.retry.delay_seconds == 1.5
+    assert task.retry.backoff == 3.0
+    assert task.timeout_seconds == 99.0

@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
-from jinja2 import Environment
 from pydantic import BaseModel
 from pydantic import Field
 
+from orchestrator.config.settings import Settings
 from orchestrator.core.pipeline import Pipeline
-from orchestrator.core.runner import generate_run_id
 from orchestrator.core.schedule import ScheduleConfig
 from orchestrator.exceptions import ConfigNotFoundError, ConfigValidationError
 from orchestrator.notify import NotifyPolicy
@@ -27,15 +24,14 @@ class RegisteredPipeline(BaseModel):
     notify: NotifyPolicy = Field(default_factory=NotifyPolicy)
 
 
-def load_yaml(path: str | Path, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+def load_yaml(path: str | Path) -> dict[str, Any]:
     file_path = Path(path)
     if not file_path.exists():
         raise ConfigNotFoundError(f"Config file not found: {file_path}")
     raw_text = file_path.read_text(encoding="utf-8")
     raw_text = _interpolate_env_vars(raw_text, file_path)
-    rendered_text = Environment(autoescape=False).from_string(raw_text).render(variables or {})
     try:
-        data = yaml.safe_load(rendered_text)
+        data = yaml.safe_load(raw_text)
     except yaml.YAMLError as exc:
         raise ConfigValidationError(f"{file_path}: {exc}") from exc
     if data is None:
@@ -47,7 +43,8 @@ def load_yaml(path: str | Path, variables: dict[str, Any] | None = None) -> dict
 
 class ConfigLoader:
     @staticmethod
-    def load(config_path: str) -> list[RegisteredPipeline]:
+    def load(config_path: str, settings: Settings | None = None) -> list[RegisteredPipeline]:
+        effective_settings = settings or Settings()
         path = Path(config_path)
         if not path.exists():
             raise ConfigNotFoundError(f"Config not found: {path}")
@@ -63,10 +60,11 @@ class ConfigLoader:
             if not isinstance(pipeline_items, list):
                 raise ConfigValidationError(f"{file}: pipelines must be a list.")
             for item in pipeline_items:
+                normalized_item = ConfigLoader._apply_pipeline_defaults(item, effective_settings)
                 try:
-                    pipeline = Pipeline(**item)
-                    schedule = ScheduleConfig(**item.get("schedule", {"type": "manual"}))
-                    notify = NotifyPolicy(**item.get("notify", {}))
+                    pipeline = Pipeline(**normalized_item)
+                    schedule = ScheduleConfig(**normalized_item.get("schedule", {"type": "manual"}))
+                    notify = NotifyPolicy(**normalized_item.get("notify", {}))
                 except Exception as exc:
                     raise ConfigValidationError(f"{file}: pipelines.{item.get('id', '<unknown>')}: {exc}") from exc
                 registered.append(RegisteredPipeline(pipeline=pipeline, schedule=schedule, notify=notify))
@@ -78,7 +76,7 @@ class ConfigLoader:
         if file_path in visited:
             raise ConfigValidationError(f"{file_path}: include cycle detected.")
         visited.add(file_path)
-        data = load_yaml(file_path, variables=get_template_context())
+        data = load_yaml(file_path)
         include_paths = data.get("include", [])
         merged: dict[str, Any] = {"pipelines": []}
         if isinstance(include_paths, str):
@@ -93,6 +91,36 @@ class ConfigLoader:
                 merged[key] = value
         return merged
 
+    @staticmethod
+    def _apply_pipeline_defaults(item: dict[str, Any], settings: Settings) -> dict[str, Any]:
+        normalized_item = dict(item)
+        normalized_tasks: list[dict[str, Any]] = []
+        for raw_task in normalized_item.get("tasks", []):
+            if not isinstance(raw_task, dict):
+                raise ConfigValidationError("Task item must be a mapping.")
+            task_data = dict(raw_task)
+            if "timeout_seconds" not in task_data:
+                task_data["timeout_seconds"] = settings.default_timeout_seconds
+            retry_config = task_data.get("retry")
+            if retry_config is None:
+                task_data["retry"] = {
+                    "times": settings.default_retry_times,
+                    "delay_seconds": settings.default_retry_delay,
+                    "backoff": settings.default_retry_backoff,
+                }
+            elif isinstance(retry_config, dict):
+                normalized_retry = dict(retry_config)
+                if "times" not in normalized_retry:
+                    normalized_retry["times"] = settings.default_retry_times
+                if "delay_seconds" not in normalized_retry:
+                    normalized_retry["delay_seconds"] = settings.default_retry_delay
+                if "backoff" not in normalized_retry:
+                    normalized_retry["backoff"] = settings.default_retry_backoff
+                task_data["retry"] = normalized_retry
+            normalized_tasks.append(task_data)
+        normalized_item["tasks"] = normalized_tasks
+        return normalized_item
+
 
 def _interpolate_env_vars(raw_text: str, file_path: Path) -> str:
     def replace(match: re.Match[str]) -> str:
@@ -106,17 +134,3 @@ def _interpolate_env_vars(raw_text: str, file_path: Path) -> str:
         raise ConfigValidationError(f"{file_path}: missing env var '{var_name}'.")
 
     return ENV_PATTERN.sub(replace, raw_text)
-
-
-def get_template_context() -> dict[str, Any]:
-    now = datetime.now()
-    return {
-        "now": now.isoformat(),
-        "today": now.strftime("%Y-%m-%d"),
-        "yesterday": (now - timedelta(days=1)).strftime("%Y-%m-%d"),
-        "yesterday_iso": (now - timedelta(days=1)).isoformat(),
-        "week_start": (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d"),
-        "month_start": now.replace(day=1).strftime("%Y-%m-%d"),
-        "run_id": generate_run_id(),
-        "pipeline_id": "",
-    }

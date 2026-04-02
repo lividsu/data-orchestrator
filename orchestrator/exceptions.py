@@ -10,6 +10,14 @@ class ConnectorAlreadyRegisteredError(OrchestratorError):
     pass
 
 
+class NotifierNotFoundError(OrchestratorError):
+    pass
+
+
+class NotifierAlreadyRegisteredError(OrchestratorError):
+    pass
+
+
 class ConnectorPingFailedError(OrchestratorError):
     pass
 

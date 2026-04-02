@@ -40,3 +40,7 @@ def get_connector(name: str, config: dict) -> BaseConnector:
 
 def list_connectors() -> list[str]:
     return sorted(_REGISTRY.keys())
+
+
+def reset_registry() -> None:
+    _REGISTRY.clear()

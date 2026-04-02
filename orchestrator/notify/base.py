@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
-from orchestrator.exceptions import ConnectorAlreadyRegisteredError, ConnectorNotFoundError
+from orchestrator.exceptions import NotifierAlreadyRegisteredError, NotifierNotFoundError
 
 NotifierFactory = type["BaseNotifier"]
 NOTIFIER_REGISTRY: dict[str, NotifierFactory] = {}
@@ -21,7 +21,7 @@ class BaseNotifier(ABC):
 def register_notifier(name: str) -> Callable[[NotifierFactory], NotifierFactory]:
     def decorator(notifier_cls: NotifierFactory) -> NotifierFactory:
         if name in NOTIFIER_REGISTRY:
-            raise ConnectorAlreadyRegisteredError(f"Notifier already registered: {name}")
+            raise NotifierAlreadyRegisteredError(f"Notifier already registered: {name}")
         NOTIFIER_REGISTRY[name] = notifier_cls
         return notifier_cls
 
@@ -31,5 +31,9 @@ def register_notifier(name: str) -> Callable[[NotifierFactory], NotifierFactory]
 def get_notifier(name: str) -> NotifierFactory:
     notifier_cls = NOTIFIER_REGISTRY.get(name)
     if notifier_cls is None:
-        raise ConnectorNotFoundError(f"Notifier not found: {name}")
+        raise NotifierNotFoundError(f"Notifier not found: {name}")
     return notifier_cls
+
+
+def reset_notifier_registry() -> None:
+    NOTIFIER_REGISTRY.clear()

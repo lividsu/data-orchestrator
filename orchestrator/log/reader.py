@@ -7,9 +7,11 @@ from typing import Any
 
 from sqlalchemy import create_engine
 from sqlalchemy import case
+from sqlalchemy import cast
 from sqlalchemy import func
 from sqlalchemy import or_
 from sqlalchemy import select
+from sqlalchemy import String
 from sqlalchemy.engine import Engine
 
 from orchestrator.log.models import create_tables
@@ -120,6 +122,11 @@ class LogReader:
         now = datetime.now(timezone.utc)
         start_time = now - timedelta(hours=hours)
         start_iso = start_time.isoformat()
+        dialect_name = self.engine.dialect.name
+        if dialect_name == "sqlite":
+            hour_bucket = func.strftime("%Y-%m-%dT%H", pipeline_runs.c.started_at)
+        else:
+            hour_bucket = func.substr(cast(pipeline_runs.c.started_at, String), 1, 13)
         with self.engine.connect() as conn:
             total_runs = conn.execute(
                 select(func.count()).select_from(pipeline_runs).where(pipeline_runs.c.started_at >= start_iso)
@@ -139,7 +146,7 @@ class LogReader:
             ).scalar_one()
             runs_by_hour_rows = conn.execute(
                 select(
-                    func.substr(pipeline_runs.c.started_at, 1, 13).label("hour"),
+                    hour_bucket.label("hour"),
                     func.count().label("count"),
                     func.sum(case((pipeline_runs.c.status == "success", 1), else_=0)).label("success_count"),
                 )

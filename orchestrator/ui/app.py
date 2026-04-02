@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import time
 from datetime import datetime
@@ -9,6 +10,8 @@ from datetime import timezone
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.request import Request
+from urllib.request import urlopen
 
 from orchestrator.log.reader import LogReader
 from orchestrator.streamlit_thread import get_orchestrator
@@ -43,7 +46,45 @@ def run_ui(db_url: str = "sqlite:///orchestrator.db", host: str = "0.0.0.0", por
     os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
     os.environ["STREAMLIT_SERVER_ADDRESS"] = host
     os.environ["STREAMLIT_SERVER_PORT"] = str(port)
+    os.environ["ORCHESTRATOR_DB_URL"] = db_url
     bootstrap.run(str(Path(__file__).resolve()), False, [], {})
+
+
+class OrchestratorApiClient:
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+
+    def list_pipelines(self) -> list[dict[str, Any]]:
+        return self._get("/pipelines")
+
+    def get_pipeline(self, pipeline_id: str) -> Any | None:
+        try:
+            payload = self._get(f"/pipeline/{pipeline_id}")
+        except Exception:
+            return None
+        return payload if payload else None
+
+    def get_upcoming_runs(self, hours: int = 2) -> list[dict[str, str]]:
+        return self._get(f"/upcoming?hours={hours}")
+
+    def trigger_async(self, pipeline_id: str) -> str:
+        payload = self._post(f"/trigger/{pipeline_id}")
+        return payload.get("run_id", "")
+
+    def pause(self, pipeline_id: str) -> None:
+        self._post(f"/pause/{pipeline_id}")
+
+    def resume(self, pipeline_id: str) -> None:
+        self._post(f"/resume/{pipeline_id}")
+
+    def _get(self, path: str) -> Any:
+        with urlopen(f"{self.base_url}{path}", timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _post(self, path: str) -> Any:
+        request = Request(url=f"{self.base_url}{path}", method="POST")
+        with urlopen(request, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
 
 
 def render_app(default_db_url: str = "sqlite:///orchestrator.db") -> None:
@@ -51,7 +92,11 @@ def render_app(default_db_url: str = "sqlite:///orchestrator.db") -> None:
 
     st.set_page_config(page_title="Data Orchestrator", layout="wide")
     orchestrator = get_orchestrator()
-    db_url = default_db_url
+    if orchestrator is None:
+        api_url = os.environ.get("ORCHESTRATOR_API_URL", "").strip()
+        if api_url:
+            orchestrator = OrchestratorApiClient(api_url)
+    db_url = os.environ.get("ORCHESTRATOR_DB_URL", default_db_url)
     if orchestrator is not None and getattr(orchestrator, "settings", None) is not None:
         db_url = orchestrator.settings.db_url
     reader = LogReader(db_url=db_url)
