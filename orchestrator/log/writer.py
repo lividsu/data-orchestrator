@@ -19,7 +19,10 @@ logger = logging.getLogger(__name__)
 
 class LogWriter:
     def __init__(self, db_url: str, engine: Engine | None = None) -> None:
-        self.engine = engine or create_engine(db_url)
+        self.engine = engine or create_engine(
+            db_url,
+            connect_args={"check_same_thread": False},
+        )
         create_tables(engine=self.engine)
         self._lock = threading.Lock()
 

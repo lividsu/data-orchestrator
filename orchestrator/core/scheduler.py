@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
-from weakref import WeakValueDictionary
 from uuid import uuid4
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -31,12 +30,18 @@ from orchestrator.notify import NotifyManager
 from orchestrator.notify import NotifyPolicy
 
 logger = logging.getLogger(__name__)
-_ORCHESTRATOR_INSTANCES: WeakValueDictionary[str, "Orchestrator"] = WeakValueDictionary()
+_ORCHESTRATOR_INSTANCES: dict[str, "Orchestrator"] = {}
 
 
 def _execute_pipeline_job(instance_id: str, pipeline_id: str, triggered_by: str = "scheduler"):
     orchestrator = _ORCHESTRATOR_INSTANCES.get(instance_id)
     if orchestrator is None:
+        logger.warning(
+            "Skipped scheduled run because orchestrator instance was not found. "
+            "instance_id=%s pipeline_id=%s",
+            instance_id,
+            pipeline_id,
+        )
         return None
     return orchestrator.trigger(pipeline_id, triggered_by=triggered_by)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import threading
 import time
 from pathlib import Path
@@ -229,3 +230,37 @@ def test_pipeline_on_success_trigger(tmp_path: Path):
     app.stop()
     assert "up" in calls
     assert "down" in calls
+
+
+def test_execute_job_survives_external_reference_drop(tmp_path: Path):
+    calls = []
+
+    @register_connector("sched_gc")
+    class C(BaseConnector):
+        def fetch(self, **kwargs):
+            calls.append(1)
+            return {"ok": True}
+
+        def push(self, data=None, **kwargs):
+            return {"ok": True}
+
+        def ping(self):
+            return True
+
+    from orchestrator.core.scheduler import _ORCHESTRATOR_INSTANCES
+    from orchestrator.core.scheduler import _execute_pipeline_job
+
+    app = Orchestrator(db_url=f"sqlite:///{tmp_path / 'gc.db'}")
+    pipeline = Pipeline(id="gc_p", tasks=[Task(id="a", connector="sched_gc", action="fetch")])
+    app.register(pipeline, ScheduleConfig(type="manual"))
+    instance_id = app._instance_id
+    del app
+    gc.collect()
+
+    result = _execute_pipeline_job(instance_id=instance_id, pipeline_id="gc_p", triggered_by="scheduler")
+    assert result is not None
+    assert len(calls) == 1
+
+    alive = _ORCHESTRATOR_INSTANCES.get(instance_id)
+    if alive is not None:
+        alive.stop()
