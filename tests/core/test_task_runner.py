@@ -113,11 +113,14 @@ def test_timeout():
         retry=RetryConfig(times=0, delay_seconds=0, backoff=2.0),
         timeout_seconds=0.1,
     )
+    started = time.time()
     result = TaskRunner().run(task)
+    duration = time.time() - started
 
     assert result.status == TaskStatus.TIMEOUT
     assert result.error_type == "TimeoutError"
     assert TimeoutConnector.close_calls == 1
+    assert duration < 1.0
 
 
 def test_upstream_output_passed_as_data():

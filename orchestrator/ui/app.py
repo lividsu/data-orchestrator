@@ -347,8 +347,11 @@ def page_run_detail(st, reader: LogReader, orchestrator: Any | None, run_id: str
         st.markdown(_build_dag_svg(pipeline.tasks, status_by_task), unsafe_allow_html=True)
 
     if run["status"] == "running" and auto_refresh:
-        time.sleep(2)
-        st.rerun()
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=2000, key=f"run_detail_refresh_{run_id}")
+        except ImportError:
+            st.info("🔄 任务运行中，请手动刷新或安装 streamlit-autorefresh 启用自动刷新。")
 
 
 def page_log_search(st, reader: LogReader, tz_option: str) -> None:

@@ -57,6 +57,9 @@ class OrchestratorApiServer:
             def do_POST(self):
                 if self.path.startswith("/trigger/"):
                     pipeline_id = self.path[len("/trigger/") :]
+                    if orchestrator.get_pipeline(pipeline_id) is None:
+                        self._not_found("pipeline not found")
+                        return
                     content_length = int(self.headers.get("Content-Length", 0))
                     runtime_kwargs = None
                     if content_length > 0:
@@ -100,7 +103,10 @@ class OrchestratorApiServer:
             def log_message(self, fmt: str, *args: Any):
                 return
 
-        self._server = ThreadingHTTPServer((self._host, self._port), Handler)
+        class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+            allow_reuse_address = True
+
+        self._server = ReusableThreadingHTTPServer((self._host, self._port), Handler)
         self._thread = Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 

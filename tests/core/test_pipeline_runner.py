@@ -320,3 +320,23 @@ def test_pipeline_level_hook_handler_called():
 
     PipelineRunner().run(pipeline, pipeline_hook_handler=hook_handler)
     assert calls == [("trigger:next_pipeline", "hooked_pipeline", "success")]
+
+
+def test_connector_initialize_failure_is_recorded_as_task_failure():
+    @register_connector("init_fail")
+    class InitFailConnector(BaseConnector):
+        def initialize(self):
+            raise FileNotFoundError("missing credential file")
+
+    pipeline = Pipeline(
+        id="init_fail_pipeline",
+        stop_on_failure=True,
+        tasks=[Task(id="a", connector="init_fail", action="fetch")],
+    )
+    result = PipelineRunner().run(pipeline)
+    task_result = result.task_results["a"]
+
+    assert result.status == "failed"
+    assert task_result.status == TaskStatus.FAILED
+    assert task_result.error_type == "FileNotFoundError"
+    assert "missing credential file" in (task_result.error_message or "")

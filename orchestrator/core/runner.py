@@ -178,11 +178,16 @@ class TaskRunner:
         handler = _ThreadLogCaptureHandler(output_buffer)
         root_logger = logging.getLogger()
         root_logger.addHandler(handler)
+        executor = ThreadPoolExecutor(max_workers=1)
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self._execute_action, action, kwargs, handler)
+            future = executor.submit(self._execute_action, action, kwargs, handler)
+            try:
                 return future.result(timeout=timeout_seconds)
+            except FuturesTimeoutError:
+                future.cancel()
+                raise
         finally:
+            executor.shutdown(wait=False, cancel_futures=True)
             captured = output_buffer.getvalue().strip()
             if captured:
                 result.terminal_output = captured
@@ -389,7 +394,29 @@ class PipelineRunner:
         task_output_callback: Callable[[str, str], None] | None = None,
     ) -> TaskResult:
         upstream_results = {task_id: all_results[task_id] for task_id in task.depends_on if task_id in all_results}
-        connector = self._get_or_create_connector(task, connector_pool, connector_pool_lock)
+        try:
+            connector = self._get_or_create_connector(task, connector_pool, connector_pool_lock)
+        except Exception as error:
+            now = datetime.now(timezone.utc)
+            logger.error(
+                "Task failed before execution: %s",
+                task.id,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            if task_output_callback is not None:
+                task_output_callback(task.id, f"{error.__class__.__name__}: {error}\n")
+            return TaskResult(
+                task_id=task.id,
+                task_name=task.name or task.id,
+                connector_name=task.connector_name,
+                status=TaskStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                duration_seconds=0.0,
+                error_type=error.__class__.__name__,
+                error_message=str(error),
+                error_traceback=traceback.format_exc(),
+            )
         output_callback: Callable[[str], None] | None = None
         if task_output_callback is not None:
             output_callback = lambda text: task_output_callback(task.id, text)

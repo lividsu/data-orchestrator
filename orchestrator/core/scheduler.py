@@ -140,11 +140,13 @@ class Orchestrator:
 
     def trigger(self, pipeline_id: str, triggered_by: str = "manual", run_id: str | None = None, runtime_kwargs: dict[str, Any] | None = None):
         logger.info("Pipeline trigger requested: %s", pipeline_id)
-        pipeline = self._pipelines[pipeline_id]
-        notify_policy = self._notify_policies.get(pipeline_id)
         run_id = run_id or f"run-{uuid4().hex}"
         self._start_live_output(run_id)
         try:
+            pipeline = self._pipelines.get(pipeline_id)
+            if pipeline is None:
+                raise KeyError(f"Pipeline '{pipeline_id}' is not registered.")
+            notify_policy = self._notify_policies.get(pipeline_id)
             return self._pipeline_runner.run(
                 pipeline,
                 log_writer=self._log_writer,
@@ -156,6 +158,10 @@ class Orchestrator:
                 runtime_kwargs=runtime_kwargs,
                 task_output_callback=lambda task_id, text: self._append_live_output(run_id, task_id, text),
             )
+        except Exception as exc:
+            logger.error("Pipeline run failed: %s", pipeline_id, exc_info=(type(exc), exc, exc.__traceback__))
+            self._append_live_output(run_id, "__orchestrator__", f"{exc.__class__.__name__}: {exc}\n")
+            raise
         finally:
             self._finish_live_output(run_id)
 
@@ -167,7 +173,18 @@ class Orchestrator:
 
         future = self._executor.submit(runner)
         self._running_futures.add(future)
-        future.add_done_callback(lambda f: self._running_futures.discard(f))
+        def _cleanup(f: Future) -> None:
+            self._running_futures.discard(f)
+            error = f.exception()
+            if error is None:
+                return
+            logger.error(
+                "Async trigger failed: %s",
+                pipeline_id,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+        future.add_done_callback(_cleanup)
         return run_id
 
     def get_live_output(self, run_id: str) -> dict[str, Any]:
@@ -341,6 +358,8 @@ class Orchestrator:
         while self._running_futures and (datetime.now().timestamp() - started) < timeout:
             done_futures = {future for future in self._running_futures if future.done()}
             self._running_futures -= done_futures
+            import time
+            time.sleep(0.1)
         self._executor.shutdown(wait=False, cancel_futures=False)
         if self._api_server is not None:
             self._api_server.stop()
@@ -352,6 +371,7 @@ class Orchestrator:
     def _register_signal_handlers(self) -> None:
         def handler(signum, frame):
             self.stop()
+            raise KeyboardInterrupt()
 
         try:
             signal.signal(signal.SIGINT, handler)

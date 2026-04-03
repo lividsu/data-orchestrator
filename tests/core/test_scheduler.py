@@ -264,3 +264,28 @@ def test_execute_job_survives_external_reference_drop(tmp_path: Path):
     alive = _ORCHESTRATOR_INSTANCES.get(instance_id)
     if alive is not None:
         alive.stop()
+
+
+def test_trigger_async_exposes_failure_in_live_output(tmp_path: Path):
+    @register_connector("sched_async_fail")
+    class C(BaseConnector):
+        def initialize(self):
+            raise FileNotFoundError("missing credential file")
+
+    app = Orchestrator(db_url=f"sqlite:///{tmp_path / 'async_fail.db'}")
+    pipeline = Pipeline(id="async_fail_p", tasks=[Task(id="a", connector="sched_async_fail", action="fetch")])
+    app.register(pipeline, ScheduleConfig(type="manual"))
+    run_id = app.trigger_async("async_fail_p")
+
+    output = {"output": "", "finished": False}
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        output = app.get_live_output(run_id)
+        if output["finished"]:
+            break
+        time.sleep(0.05)
+    app.stop()
+
+    assert output["finished"] is True
+    assert "FileNotFoundError" in output["output"]
+    assert "missing credential file" in output["output"]
